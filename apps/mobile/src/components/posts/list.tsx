@@ -2,10 +2,11 @@ import {
   FlashList,
   type FlashListRef,
   type ListRenderItem,
+  ViewToken,
 } from '@shopify/flash-list'
 import { useRouter } from 'expo-router'
 import { type ReactElement, useCallback, useRef } from 'react'
-import { type StyleProp, type ViewStyle } from 'react-native'
+import { ViewabilityConfig, type StyleProp, type ViewStyle } from 'react-native'
 import { StyleSheet } from 'react-native-unistyles'
 import { useTranslations } from 'use-intl'
 
@@ -28,8 +29,9 @@ import { Empty } from '../common/empty'
 import { Loading } from '../common/loading'
 import { View } from '../common/view'
 
-const viewabilityConfig = {
+const viewabilityConfig: ViewabilityConfig = {
   minimumViewTime: usePreferences.getState().seenOnScrollDelay * 1000,
+  viewAreaCoveragePercentThreshold: 5,
   waitForInteraction: false,
 }
 
@@ -60,6 +62,7 @@ export function PostList({
   const t = useTranslations('component.posts.list')
 
   const list = useRef<FlashListRef<Item>>(null)
+  const previouslySeenViewables = useRef<Array<ViewToken<Item>>>([])
 
   useScrollToTop(list, listProps)
 
@@ -171,15 +174,41 @@ export function PostList({
         if (!seenOnScroll) {
           return
         }
+        
+        const currentlyViewablePosts = viewableItems.filter((item) => {
+          const data = item.item as Post | Comment
 
-        const items = viewableItems.filter(
-          (item) => item.item.type !== 'reply' && item.item.type !== 'more',
+          return data.type !== 'reply' && data.type !== 'more'
+        })
+
+        //console.log(`CPE: Viewable items changes. In view[${currentlyViewablePosts.length}]: ${currentlyViewablePosts.map(p => (p.item as Post).id).join(',')}`);
+
+        //console.log(`CPE: Cache of known viewed posts[${previouslySeenViewables.current.length}]: ${previouslySeenViewables.current.map(p => (p.item as Post).id).join(',')}`);
+        // Compare the new list of viewables to the previously seen viewables to find which ones are no longer visible
+        const noLongerViewables = previouslySeenViewables.current.filter(
+          (x) => !currentlyViewablePosts.map((item) => item.key).includes(x.key),
         )
+        
+        //console.log(`CPE: Posts that are no longer viewable: ${noLongerViewables.map(p => (p.item as Post).id)}`);
 
-        for (const item of items) {
+        noLongerViewables.forEach((item) => {
           addPost({
             id: (item.item as Post).id,
           })
+        })
+
+        // Update our list of previously seen viewables for the next update.
+        const combinedViewables = new Map<string, ViewToken<Item>>();
+        [...previouslySeenViewables.current, ...currentlyViewablePosts].forEach((item) => {
+          combinedViewables.set(item.key, item);
+        });
+        previouslySeenViewables.current = Array.from(combinedViewables.values());
+
+        // Sliding window of viewables.
+        // Don't bother keeping infinite history. Just cut it in half when we hit 100 records.
+        // (most likely only 2-10 will be visible at any given time)
+        if (previouslySeenViewables.current.length > 100) {
+          previouslySeenViewables.current = previouslySeenViewables.current.slice(50);
         }
       }}
       ref={list}
